@@ -1,0 +1,12 @@
+---
+email: {
+  "domains": [
+  ],
+  "accounts": [
+  ],
+  "aliases": [
+  ],
+  vbox_dir: /var/mail/vhosts,
+  accounts_file: /etc/postfix/vmailbox,
+  alias_file: /etc/postfix/virtual
+}

@@ -1,0 +1,3 @@
+{% for alias in email.aliases %}
+{{alias.alias}}	{{alias.account}}
+{% endfor %}

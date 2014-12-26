@@ -1,0 +1,104 @@
+---
+- command: dpkg-query -l sendmail
+  register: sendmail
+  changed_when: False
+  ignore_errors: yes
+- service: name=sendmail
+           state=stopped
+           enabled=no
+  when: sendmail.stdout.find('no packages found') != -1
+- copy: dest="{{item.dest}}"
+        src="{{item.src}}"
+  with_items:
+    - { dest: "/etc/ssl/certs/{{ssl.certificate}}", src: "{{ssl.certificate}}" }
+    - { dest: "/etc/ssl/private/{{ssl.key}}", src: "{{ssl.key}}" }
+- apt: name={{item}}
+  with_items:
+    - postfix
+    - dovecot-imapd
+    - dovecot-pop3d
+    - dovecot-sieve
+- lineinfile: dest=/etc/postfix/master.cf
+              regexp="{{item}}"
+              line="\1"
+              backrefs=true
+  with_items:
+    - "^#(submission inet.*)$"
+    - "^#(  -o syslog_name=postfix/submission.*)$"
+    - "^#(  -o smtpd_tls_security_level=encrypt.*)$"
+    - "^#(  -o smtpd_sasl_auth_enable=yes.*)$"
+    - "^#(  -o smtpd_client_restrictions=permit_sasl_authenticated,reject.*)$"
+    - "^#(smtps     inet.*)$"
+    - "^#(  -o syslog_name=postfix/smtps.*)$"
+    - "^#(  -o smtpd_tls_wrappermode=yes.*)$"
+    - "^#(  -o smtpd_sasl_auth_enable=yes.*)$"
+    - "^#(  -o smtpd_client_restrictions=permit_sasl_authenticated,reject.*)$"
+  notify: reload postfix
+- replace: dest=/etc/postfix/main.cf
+           regexp="^smtpd_banner.*=.*{{ansible_distribution}}.*$"
+           replace="smtpd_banner = $myhostname ESMTP $mail_name"
+  notify: reload postfix
+- command: grep -q 'dovecot   unix' /etc/postfix/master.cf
+  register: dovecot_mastercf
+  ignore_errors: True
+  changed_when: False
+- lineinfile: dest=/etc/postfix/master.cf
+              regexp="^"
+              line="dovecot   unix  -       n       n       -       -       pipe\n  flags=DRhu user=email:email argv=/usr/lib/dovecot/deliver -f ${sender} -d ${recipient}"
+              insertafter=EOF
+  when: dovecot_mastercf|failed
+  notify: reload postfix
+- set_fact: postfix_domains_directive="virtual_mailbox_domains = {{email.domains|join(" ")}}"
+  when: email.domains|length > 0
+- set_fact: postfix_domains_directive="#virtual_mailbox_domains ="
+  when: email.domains|length == 0
+- replace: dest=/etc/postfix/main.cf
+           regexp="{{item.regexp}}"
+           replace="{{item.line}}"
+  with_items:
+    - { regexp: "^smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated,reject_unauth_destination", line: "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated,reject_unauth_destination" }
+    - { regexp: "^smtpd_sasl_type = dovecot", line: "smtpd_sasl_type = dovecot" }
+    - { regexp: "^smtpd_sasl_path = private/auth", line: "smtpd_sasl_path = private/auth" }
+    - { regexp: "^smtpd_sasl_auth_enable = yes", line: "smtpd_sasl_auth_enable = yes" }
+    - { regexp: "^smtpd_sasl_security_options = noanonymous, nodictionary", line: "smtpd_sasl_security_options = noanonymous, nodictionary" }
+    - { regexp: "^smtpd_sasl_tls_security_options = noanonymous", line: "smtpd_sasl_tls_security_options = noanonymous" }
+    - { regexp: "^({{postfix_domains_directive}})", line: "{{postfix_domains_directive}}" }
+    - { regexp: "^virtual_mailbox_maps = hash:{{email.accounts_file}}", line: "virtual_mailbox_maps = hash:{{email.accounts_file}}" }
+    - { regexp: "^virtual_mailbox_base = {{email.vbox_dir}}", line: "virtual_mailbox_base = {{email.vbox_dir}}" }
+    - { regexp: "^virtual_uid_maps = static:5000", line: "virtual_uid_maps = static:5000" }
+    - { regexp: "^virtual_gid_maps = static:5000", line: "virtual_gid_maps = static:5000" }
+    - { regexp: "^virtual_alias_maps = hash:{{email.alias_file}}", line: "virtual_alias_maps = hash:{{email.alias_file}}" }
+    - { regexp: "^message_size_limit = 52428800", line: "message_size_limit = 52428800" }
+    - { regexp: "^virtual_mailbox_limit = 52428800", line: "virtual_mailbox_limit = 52428800" }
+    - { regexp: "^smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem$", line: "smtpd_tls_cert_file=/etc/ssl/certs/{{ssl.certificate}}" }
+    - { regexp: "^smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key$", line: "smtpd_tls_key_file=/etc/ssl/private/{{ssl.key}}" }
+  notify: reload postfix
+- file: path="{{email.vbox_dir}}/{{item.domain}}/{{item.account}}"
+        state=directory
+        owner=mail
+  with_items:
+    email.accounts
+- template: dest="{{email.accounts_file}}"
+            src=accounts.postfix
+  notify:
+    - hash accounts
+- template: dest="{{email.alias_file}}"
+            src=aliases.postfix
+  notify:
+    - hash aliases
+- replace: dest="/etc/dovecot/conf.d/{{item.file}}"
+           regexp="{{item.regexp}}"
+           replace="{{item.line}}"
+  with_items:
+    - { file: "10-auth.conf", regexp: "^#disable_plaintext_auth = .*", line: "disable_plaintext_auth = yes" }
+    - { file: "10-mail.conf", regexp: "^mail_location = .*", line: "mail_location = maildir:/var/mail/vhosts/%d/%n/" }
+    - { file: "10-ssl.conf",  regexp: "^ssl_cert = </etc/dovecot/dovecot.pem$", line: "ssl_cert = </etc/ssl/certs/{{ssl.certificate}}" }
+    - { file: "10-ssl.conf",  regexp: "^ssl_key = </etc/dovecot/private/dovecot.pem$", line: "ssl_key = </etc/ssl/private/{{ssl.key}}" }
+  notify: restart dovecot
+- template: dest="/etc/dovecot/conf.d/{{item.dest}}"
+            src="{{item.src}}"
+  with_items:
+    - { dest: "10-master.conf", src: "10-master.dovecot" }
+    - { dest: "15-lda.conf", src: "15-lda.dovecot" }
+    - { dest: "auth-passwdfile.conf.ext", src: "auth-passwdfile.dovecot" }
+  notify: restart dovecot

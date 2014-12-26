@@ -1,0 +1,3 @@
+{% for account in email.accounts %}
+{{account.account}}@{{account.domain}}	{{account.domain}}/{{account.account}}/
+{% endfor %}

@@ -1,0 +1,11 @@
+- name: reload postfix
+  shell: postfix reload
+- name: restart dovecot
+  service: name=dovecot
+           state=restarted
+- name: hash accounts
+  shell: "postmap {{email.accounts_file}}"
+  notify: reload postfix
+- name: hash aliases
+  shell: "postmap {{email.alias_file}}"
+  notify: reload postfix
